@@ -23,7 +23,7 @@ This repository contains a one-click shell script to install and configure [Xray
 or
 `curl -L -s https://raw.githubusercontent.com/miku111/XrayOnAlpine/main/install-release.sh | bash`
 
-##Managing the Xray Service
+##  Managing the Xray Service
 Once installed, you can manage the Xray service using OpenRC commands:
 
 Start the Xray Service:
