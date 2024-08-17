@@ -10,7 +10,7 @@ fi
 apk update && apk upgrade
 
 # Step 2: Install required dependencies
-apk add curl bash unzip
+apk add curl bash unzip grep
 
 # Step 3: Download and install Xray
 XRAY_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -Po '"tag_name": "\K.*?(?=")')
