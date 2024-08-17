@@ -40,4 +40,4 @@ sudo service xray status
 
 ## ImportNote
 
-this script just INSTALL Xray on your system, you need CONFIG it manually.the default config file is /usr/local/etc/xray/config.conf.
+this script just INSTALL Xray on your system, you need CONFIG it manually.the default config file is /usr/local/etc/xray/config.json.
