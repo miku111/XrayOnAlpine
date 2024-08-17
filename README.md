@@ -22,7 +22,7 @@ This repository contains a one-click shell script to install and configure [Xray
 `wget https://raw.githubusercontent.com/miku111/XrayOnAlpine/main/install-release.sh && bash install-release.sh`
 or `bash <(curl -L -s [check.unlock.media](https://raw.githubusercontent.com/miku111/XrayOnAlpine/main/install-release.sh))`
 
-#Managing the Xray Service
+##Managing the Xray Service
 Once installed, you can manage the Xray service using OpenRC commands:
 
 Start the Xray Service:
@@ -37,5 +37,5 @@ sudo service xray restart
 Check the Status of Xray:
 sudo service xray status
 
-#ImportNote
+##ImportNote
 this script just INSTALL Xray on your system, you need CONFIG it manually.the default config file is /usr/local/etc/xray/config.conf.
