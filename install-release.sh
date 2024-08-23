@@ -168,12 +168,6 @@ installHy2(){
     echo "install hystria2 and config it"
 }
 
-# Ensure this script is run as root
-if [ "$(id -u)" -ne 0 ]; then
-   echo "This script must be run as root!" 
-   exit 1
-fi
-
 menu(){
     echo "0. Exit"
     echo "1. install Xray and Config Reality"
@@ -190,4 +184,9 @@ menu(){
         menu
     fi
 }
+# Ensure this script is run as root
+if [ "$(id -u)" -ne 0 ]; then
+   echo "This script must be run as root!" 
+   exit 1
+fi
 menu #special thanks to administrator of 1024.day
