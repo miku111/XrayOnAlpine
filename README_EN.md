@@ -37,9 +37,4 @@ sudo service xray restart
 
 Check the Status of Xray:
 sudo service xray status
-## 📢 Sponsor
 
-### [SwapChicken](https://swapchicken.cloud/index.php)  
-Your go-to VPS provider for reliable, high-performance hosting solutions. SwapChicken offers scalable virtual private servers tailored to meet your needs, whether for development, production, or personal projects.  
-
-Check them out at [swapchicken.cloud](https://swapchicken.cloud/index.php)!
