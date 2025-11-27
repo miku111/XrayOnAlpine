@@ -271,7 +271,7 @@ client_re(){
     echo "Public key：${rePublicKey}"
     echo "底层传输：reality"
     echo "SNI: $sniName"
-    echo "shortIds: ${getPort}"
+    echo "shortIds: ${shortId1}"
     echo "===================================="
     echo "vless://${v2uuid}@$(getIP):${getPort}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sniName&fp=chrome&pbk=${rePublicKey}&sid=${shortId1}&type=tcp&headerType=none#xrayReality"
     echo
