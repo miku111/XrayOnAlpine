@@ -20,8 +20,8 @@ getShortId(){
 configReality(){
     v2uuid=$(/usr/local/bin/xray/xray uuid)
         reX25519Key=$(/usr/local/bin/xray/xray x25519)
-    rePrivateKey=$(echo "${reX25519Key}" | head -1 | awk '{print $3}')
-    rePublicKey=$(echo "${reX25519Key}" | tail -n 1 | awk '{print $3}')
+    rePrivateKey=$(echo "${reX25519Key}" | awk '/PrivateKey:/ {print $2}')
+    rePublicKey=$(echo "${reX25519Key}" | awk '/Password:/ {print $2}')
     read -t 15 -p "please input port or use drfault 443 port(1-65535)："  getPort
 if [ -z $getPort ];then
     getPort=443
