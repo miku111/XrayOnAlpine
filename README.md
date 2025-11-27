@@ -50,9 +50,3 @@ sudo service xray restart
 ```sh
 sudo service xray status
 ```
-
-## 📢 Sponsor
-**SwapChicken**
-您的理想 VPS 提供商，提供可靠、高性能的托管解决方案。SwapChicken 提供可扩展的虚拟专用服务器，专为满足开发、生产或个人项目的需求而设计。
-
-查看他们的服务：[swapchicken.cloud](https://swapchicken.cloud)
