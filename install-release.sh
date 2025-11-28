@@ -29,6 +29,7 @@ fi
 shortId1=$(getShortId)
 shortId2=$(getShortId)
 sniName='uedata.amazon.com'
+export sniName
     # Step 4: Create the Xray configuration file
 cat >/usr/local/etc/xray/config.json<<EOF
 {
