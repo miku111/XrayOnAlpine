@@ -1,250 +1,442 @@
-#                             Online Bash Shell.
-#                 Code, Compile, Run and Debug Bash script online.
-# Write your code in this editor and press "Run" button to execute it.
+#!/usr/bin/env bash
+
+# Alpine Linux Xray/REALITY installer.
+# Automatic configuration uses Amazon as the REALITY target.
+# The regional/manual branch and Hysteria 2 branch are retained.
+
+XRAY_HOME="/usr/local/bin/xray"
+XRAY_BIN="${XRAY_HOME}/xray"
+XRAY_CLI_LINK="/usr/local/sbin/xray"
+XRAY_CONFIG_DIR="/usr/local/etc/xray"
+XRAY_CONFIG="${XRAY_CONFIG_DIR}/config.json"
+XRAY_ASSET_DIR="/usr/local/share/xray"
+XRAY_LOG_DIR="/var/log/xray"
+REALITY_TARGET="www.amazon.com:443"
+REALITY_SNI="www.amazon.com"
+
+log(){
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+warn(){
+    printf '[%s] WARNING: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+
+die(){
+    printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+    exit 1
+}
+
 getIP(){
-    local serverIP=
-    serverIP=$(curl -s -4 http://www.cloudflare.com/cdn-cgi/trace | grep "ip" | awk -F "[=]" '{print $2}')
+    local serverIP=""
+
+    serverIP=$(curl -4 -fsS --connect-timeout 5 --max-time 10 \
+        https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null |
+        awk -F= '$1 == "ip" {print $2; exit}' || true)
+
     if [[ -z "${serverIP}" ]]; then
-        serverIP=$(curl -s -6 http://www.cloudflare.com/cdn-cgi/trace | grep "ip" | awk -F "[=]" '{print $2}')
+        serverIP=$(curl -6 -fsS --connect-timeout 5 --max-time 10 \
+            https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null |
+            awk -F= '$1 == "ip" {print $2; exit}' || true)
     fi
-    echo "${serverIP}"
+
+    printf '%s\n' "${serverIP:-SERVER_IP}"
 }
+
+formatUriHost(){
+    local host=$1
+    if [[ "${host}" == *:* && "${host}" != \[*\] ]]; then
+        printf '[%s]' "${host}"
+    else
+        printf '%s' "${host}"
+    fi
+}
+
 getShortId(){
-    hexchars="0123456789abcdef"
-    str=""
-    for _ in $(seq 1 16); do
-        str="$str${hexchars:RANDOM%16:1}"
-    done
-    echo "$str"
+    od -An -N8 -tx1 /dev/urandom | tr -d ' \n'
 }
+
+selectRealityPort(){
+    local input=""
+
+    if [[ -n "${XRAY_PORT:-}" ]]; then
+        getPort=${XRAY_PORT}
+    else
+        read -r -t 15 -p "REALITY listen port [443]: " input || true
+        getPort=${input:-443}
+    fi
+
+    [[ "${getPort}" =~ ^[0-9]+$ ]] || die "Invalid port: ${getPort}"
+    (( getPort >= 1 && getPort <= 65535 )) || die "Port must be between 1 and 65535."
+
+    if (( getPort != 443 )); then
+        warn "Current Xray releases warn when REALITY listens on a non-443 port."
+    fi
+}
+
+generateRealityCredentials(){
+    local keyOutput
+
+    v2uuid=$(${XRAY_BIN} uuid | tr -d '\r\n')
+    keyOutput=$(${XRAY_BIN} x25519)
+
+    rePrivateKey=$(printf '%s\n' "${keyOutput}" |
+        awk -F':[[:space:]]*' '$1 == "PrivateKey" {print $2; exit}' |
+        tr -d '\r')
+
+    # Compatible with:
+    #   Password: <public key>
+    #   Password (PublicKey): <public key>
+    # Hash32 is intentionally not used as the client public key.
+    rePublicKey=$(printf '%s\n' "${keyOutput}" |
+        awk -F':[[:space:]]*' '$1 ~ /^Password( \(PublicKey\))?$/ {print $2; exit}' |
+        tr -d '\r')
+
+    shortId1=$(getShortId)
+    shortId2=$(getShortId)
+
+    [[ -n "${v2uuid}" ]] || die "xray uuid returned an empty value."
+    [[ -n "${rePrivateKey}" ]] || die "Could not parse PrivateKey from xray x25519."
+    [[ -n "${rePublicKey}" ]] || die "Could not parse Password (PublicKey) from xray x25519."
+    [[ "${shortId1}" =~ ^[0-9a-f]{16}$ ]] || die "Failed to generate shortId."
+}
+
+installRealityConfig(){
+    local tempConfig backupConfig=""
+    tempConfig=$(mktemp)
+
+    cat >"${tempConfig}" <<EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-reality-in",
+      "port": ${getPort},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${v2uuid}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "${REALITY_TARGET}",
+          "xver": 0,
+          "serverNames": [
+            "${REALITY_SNI}"
+          ],
+          "privateKey": "${rePrivateKey}",
+          "maxTimeDiff": 0,
+          "shortIds": [
+            "${shortId1}",
+            "${shortId2}"
+          ],
+          "limitFallbackUpload": {
+            "afterBytes": 0,
+            "bytesPerSec": 262144,
+            "burstBytesPerSec": 1048576
+          },
+          "limitFallbackDownload": {
+            "afterBytes": 0,
+            "bytesPerSec": 1048576,
+            "burstBytesPerSec": 4194304
+          }
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "blocked"
+    }
+  ]
+}
+EOF
+
+    XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" \
+        "${XRAY_BIN}" run -test -c "${tempConfig}" >/dev/null || {
+            rm -f "${tempConfig}"
+            die "Generated Xray configuration did not pass validation."
+        }
+
+    mkdir -p "${XRAY_CONFIG_DIR}"
+    if [[ -f "${XRAY_CONFIG}" ]]; then
+        backupConfig="${XRAY_CONFIG}.bak.$(date '+%Y%m%d%H%M%S')"
+        cp -p "${XRAY_CONFIG}" "${backupConfig}"
+        log "Previous configuration backed up to ${backupConfig}."
+    fi
+
+    install -m 0600 "${tempConfig}" "${XRAY_CONFIG}"
+    rm -f "${tempConfig}"
+
+    rc-service xray restart || die "Xray failed to restart."
+    sleep 1
+    rc-service xray status >/dev/null 2>&1 || die "Xray is not running; check ${XRAY_LOG_DIR}/openrc.err."
+}
+
 configReality(){
-    v2uuid=$(/usr/local/bin/xray/xray uuid)
-        reX25519Key=$(/usr/local/bin/xray/xray x25519)
-    rePrivateKey=$(echo "${reX25519Key}" | awk '/PrivateKey:/ {print $2}')
-    rePublicKey=$(echo "${reX25519Key}" | awk '/Password:/ {print $2}')
-    read -t 15 -p "please input port or use drfault 443 port(1-65535)："  getPort
-if [ -z $getPort ];then
-    getPort=443
-fi
-shortId1=$(getShortId)
-shortId2=$(getShortId)
-sniName='uedata.amazon.com'
-export sniName
-    # Step 4: Create the Xray configuration file
-cat >/usr/local/etc/xray/config.json<<EOF
-{
-    "inbounds": [
-        {
-            "port": $getPort,
-            "protocol": "vless",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "$v2uuid",
-                        "flow": "xtls-rprx-vision"
-                    }
-                ],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "show": false,
-                    "dest": "www.amazon.com:443",
-                    "xver": 0,
-                    "serverNames": [
-                        "uedata.amazon.com",
-                        "corporate.amazon.com",
-                        "mp3recs.amazon.com"
-                    ],
-                    "privateKey": "$rePrivateKey",
-                    "minClientVer": "",
-                    "maxClientVer": "",
-                    "maxTimeDiff": 0,
-                    "shortIds": [
-                        "$shortId1",
-                        "$shortId2"
-                    ]
-                }
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "tag": "direct"
-        },
-        {
-            "protocol": "blackhole",
-            "tag": "blocked"
-        }
-    ]    
-}
-EOF
-service xray restart
+    generateRealityCredentials
+    selectRealityPort
+
+    sniName=${REALITY_SNI}
+    serverName=${REALITY_TARGET%:*}
+    export sniName serverName
+
+    installRealityConfig
 }
 
-
+# Regional/manual selection is retained. Only key parsing and current target
+# field compatibility are updated; the target list itself is unchanged.
 configRealityRegion(){
-destNames=("www.t-mobile.com" "www.arm.com" "www.tsukuba.ac.jp" "www.hongkongdisneyland.com" "www.china-airlines.com" "sigtelinc.com" "www.bouyguestelecom.fr" "www.mercedes-benz.de" "www.incredibleindia.gov.in" "www.amazon.com")
-sniNames=("business.t-mobile.com" "learn.arm.com" "www.tsukuba.ac.jp" "entitlement.hongkongdisneyland.com" "book.china-airlines.com" "www.sigtelinc.com" "www.bouygtel.fr" "pro.mercedes-benz.com" "www.incredibleindia.org" "corporate.amazon.com")
-echo "Please select a region:"
-echo "1. US"
-echo "2. UK"
-echo "3. JP"
-echo "4. HK"
-echo "5. TW"
-echo "6. SG"
-echo "7. FR"
-echo "8. DE"
-echo "9. IN"
-echo "10. Others"
+    local userInput index tempConfig
+    destNames=("www.t-mobile.com" "www.arm.com" "www.tsukuba.ac.jp" "www.hongkongdisneyland.com" "www.china-airlines.com" "sigtelinc.com" "www.bouyguestelecom.fr" "www.mercedes-benz.de" "www.incredibleindia.gov.in" "www.amazon.com")
+    sniNames=("business.t-mobile.com" "learn.arm.com" "www.tsukuba.ac.jp" "entitlement.hongkongdisneyland.com" "book.china-airlines.com" "www.sigtelinc.com" "www.bouygtel.fr" "pro.mercedes-benz.com" "www.incredibleindia.org" "corporate.amazon.com")
 
-# Read user input
-read -r userInput
+    echo "Please select a region:"
+    echo "1. US"
+    echo "2. UK"
+    echo "3. JP"
+    echo "4. HK"
+    echo "5. TW"
+    echo "6. SG"
+    echo "7. FR"
+    echo "8. DE"
+    echo "9. IN"
+    echo "10. Others"
+    read -r userInput
 
-if [ "$userInput" -ge 1 ] && [ "$userInput" -le 10 ]; then
-    index=$((userInput - 1))  # Adjust index to match array (0-based)
-    serverName=${destNames[$index]}
-    sniName=${sniNames[$index]}
-else
-    echo "Invalid selection. Please enter a number between 1 and 10."
-    configRealityRegion
-fi
+    if [[ "${userInput}" =~ ^([1-9]|10)$ ]]; then
+        index=$((userInput - 1))
+        serverName=${destNames[$index]}
+        sniName=${sniNames[$index]}
+    else
+        echo "Invalid selection. Please enter a number between 1 and 10."
+        return 1
+    fi
 
+    generateRealityCredentials
+    selectRealityPort
+    tempConfig=$(mktemp)
 
-    v2uuid=$(/usr/local/bin/xray/xray uuid)
-        reX25519Key=$(/usr/local/bin/xray/xray x25519)
-    rePrivateKey=$(echo "${reX25519Key}" | head -1 | awk '{print $2}')
-    rePublicKey=$(echo "${reX25519Key}" | tail -n 1 | awk '{print $2}')
-    read -t 15 -p "please input port or use drfault 443 port(1-65535)："  getPort
-if [ -z $getPort ];then
-    getPort=443
-fi
-shortId1=$(getShortId)
-shortId2=$(getShortId)
-
-
-    # Step 4: Create the Xray configuration file
-cat >/usr/local/etc/xray/config.json<<EOF
+    cat >"${tempConfig}" <<EOF
 {
-    "inbounds": [
-        {
-            "port": $getPort,
-            "protocol": "vless",
-            "settings": {
-                "clients": [
-                    {
-                        "id": "$v2uuid",
-                        "flow": "xtls-rprx-vision"
-                    }
-                ],
-                "decryption": "none"
-            },
-            "streamSettings": {
-                "network": "tcp",
-                "security": "reality",
-                "realitySettings": {
-                    "show": false,
-                    "dest": "$serverName:443",
-                    "xver": 0,
-                    "serverNames": [
-                        "$sniName"
-                    ],
-                    "privateKey": "$rePrivateKey",
-                    "minClientVer": "",
-                    "maxClientVer": "",
-                    "maxTimeDiff": 0,
-                    "shortIds": [
-                        "$shortId1",
-                        "$shortId2"
-                    ]
-                }
-            }
+  "inbounds": [
+    {
+      "port": ${getPort},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${v2uuid}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "${serverName}:443",
+          "xver": 0,
+          "serverNames": ["${sniName}"],
+          "privateKey": "${rePrivateKey}",
+          "maxTimeDiff": 0,
+          "shortIds": ["${shortId1}", "${shortId2}"]
         }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "tag": "direct"
-        },
-        {
-            "protocol": "blackhole",
-            "tag": "blocked"
-        }
-    ]    
+      }
+    }
+  ],
+  "outbounds": [
+    {"protocol": "freedom", "tag": "direct"},
+    {"protocol": "blackhole", "tag": "blocked"}
+  ]
 }
 EOF
-service xray restart
+
+    XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" \
+        "${XRAY_BIN}" run -test -c "${tempConfig}" >/dev/null || {
+            rm -f "${tempConfig}"
+            die "Generated manual configuration did not pass validation."
+        }
+
+    [[ -f "${XRAY_CONFIG}" ]] && cp -p "${XRAY_CONFIG}" "${XRAY_CONFIG}.bak.$(date '+%Y%m%d%H%M%S')"
+    install -m 0600 "${tempConfig}" "${XRAY_CONFIG}"
+    rm -f "${tempConfig}"
+    rc-service xray restart
 }
 
+detectXrayAsset(){
+    case "$(uname -m)" in
+        x86_64|amd64) echo "64" ;;
+        aarch64|arm64) echo "arm64-v8a" ;;
+        armv7l|armv7) echo "arm32-v7a" ;;
+        armv6l|armv6) echo "arm32-v6" ;;
+        i386|i486|i586|i686) echo "32" ;;
+        riscv64) echo "riscv64" ;;
+        *) die "Unsupported architecture: $(uname -m)" ;;
+    esac
+}
+
+getLatestXrayVersion(){
+    local releaseJson effectiveUrl version
+
+    if [[ -n "${XRAY_VERSION:-}" ]]; then
+        echo "v${XRAY_VERSION#v}"
+        return
+    fi
+
+    releaseJson=$(curl -fsSL --connect-timeout 10 --max-time 30 \
+        --retry 3 --retry-delay 2 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        https://api.github.com/repos/XTLS/Xray-core/releases/latest 2>/dev/null || true)
+
+    version=$(printf '%s\n' "${releaseJson}" |
+        sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+        head -n 1)
+
+    if [[ -z "${version}" ]]; then
+        effectiveUrl=$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+            --connect-timeout 10 --max-time 30 \
+            https://github.com/XTLS/Xray-core/releases/latest 2>/dev/null || true)
+        version=${effectiveUrl##*/}
+    fi
+
+    [[ "${version}" == v* ]] || die "Unable to determine the latest Xray release."
+    echo "${version}"
+}
 
 installXray(){
-    apk update && apk upgrade
+    local xrayVersion xrayAsset tempDir zipFile digestFile downloadUrl
+    local expectedSha actualSha choice
 
-# Step 2: Install required dependencies
-apk add curl bash unzip grep
+    log "Installing dependencies..."
+    apk update
+    apk add --no-cache bash ca-certificates curl grep openssl unzip
+    update-ca-certificates >/dev/null 2>&1 || true
 
-# Step 3: Download and install Xray
-XRAY_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep -Po '"tag_name": "\K.*?(?=")')
-curl -L -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip
+    xrayVersion=$(getLatestXrayVersion)
+    xrayAsset=$(detectXrayAsset)
+    tempDir=$(mktemp -d)
+    zipFile="${tempDir}/xray.zip"
+    digestFile="${tempDir}/xray.zip.dgst"
+    downloadUrl="https://github.com/XTLS/Xray-core/releases/download/${xrayVersion}/Xray-linux-${xrayAsset}.zip"
 
-# Create directories
-mkdir -p /usr/local/bin/xray
-mkdir -p /usr/local/etc/xray
+    log "Downloading Xray ${xrayVersion} for $(uname -m)..."
+    curl -fL --connect-timeout 10 --max-time 180 \
+        --retry 3 --retry-delay 2 \
+        -o "${zipFile}" "${downloadUrl}" || {
+            rm -rf "${tempDir}"
+            die "Failed to download Xray."
+        }
 
-# Unzip the Xray package
-unzip /tmp/xray.zip -d /usr/local/bin/xray
+    if curl -fL --connect-timeout 10 --max-time 30 \
+        --retry 2 --retry-delay 1 \
+        -o "${digestFile}" "${downloadUrl}.dgst" 2>/dev/null; then
+        expectedSha=$(grep -Ei 'SHA(2-)?-?256' "${digestFile}" |
+            awk '{print $NF}' |
+            tr -cd '0-9a-fA-F' |
+            head -c 64 || true)
+        if [[ "${#expectedSha}" -eq 64 ]]; then
+            actualSha=$(sha256sum "${zipFile}" | awk '{print $1}')
+            [[ "${actualSha,,}" == "${expectedSha,,}" ]] || {
+                rm -rf "${tempDir}"
+                die "Xray archive SHA-256 verification failed."
+            }
+            log "Xray archive SHA-256 verified."
+        else
+            warn "Could not parse SHA-256 from the digest file."
+        fi
+    else
+        warn "Digest file download failed; continuing without checksum verification."
+    fi
 
-# Make Xray binary executable
-chmod +x /usr/local/bin/xray/xray
+    mkdir -p "${tempDir}/unpack"
+    unzip -q -o "${zipFile}" -d "${tempDir}/unpack" || {
+        rm -rf "${tempDir}"
+        die "Failed to extract Xray."
+    }
 
+    [[ -f "${tempDir}/unpack/xray" ]] || {
+        rm -rf "${tempDir}"
+        die "Xray binary was not found in the archive."
+    }
+    chmod 0755 "${tempDir}/unpack/xray"
+    "${tempDir}/unpack/xray" version >/dev/null || {
+        rm -rf "${tempDir}"
+        die "Downloaded Xray binary cannot run on this system."
+    }
 
-# Step 5: Create OpenRC init script for Xray
-cat <<EOF > /etc/init.d/xray
+    rc-service xray stop >/dev/null 2>&1 || true
+    mkdir -p "${XRAY_HOME}" "${XRAY_CONFIG_DIR}" "${XRAY_ASSET_DIR}" "${XRAY_LOG_DIR}"
+    install -m 0755 "${tempDir}/unpack/xray" "${XRAY_BIN}"
+    ln -sfn "${XRAY_BIN}" "${XRAY_CLI_LINK}"
+    [[ -f "${tempDir}/unpack/geoip.dat" ]] && install -m 0644 "${tempDir}/unpack/geoip.dat" "${XRAY_ASSET_DIR}/geoip.dat"
+    [[ -f "${tempDir}/unpack/geosite.dat" ]] && install -m 0644 "${tempDir}/unpack/geosite.dat" "${XRAY_ASSET_DIR}/geosite.dat"
+    rm -rf "${tempDir}"
+
+    cat > /etc/init.d/xray <<'EOF'
 #!/sbin/openrc-run
 
 name="Xray"
 description="Xray Proxy Service"
+supervisor=supervise-daemon
+respawn_delay=5
+respawn_max=3
+respawn_period=60
 
 command="/usr/local/bin/xray/xray"
-command_args="-config /usr/local/etc/xray/config.json"
-pidfile="/var/run/xray.pid"
-command_background="yes"
+command_args="run -c /usr/local/etc/xray/config.json"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/xray/openrc.log"
+error_log="/var/log/xray/openrc.err"
+env=${env:-"XRAY_LOCATION_ASSET=/usr/local/share/xray"}
+extra_commands="checkconfig"
 
 depend() {
     need net
+    after firewall
+}
+
+checkconfig() {
+    "$command" run -test -c /usr/local/etc/xray/config.json
 }
 
 start_pre() {
-    checkpath --file --mode 0644 --owner root:root /var/run/xray.pid
+    checkpath -d -m 0755 -o root:root /var/log/xray
+    checkpath -f -m 0644 -o root:root "$output_log" "$error_log"
+    checkconfig
 }
 EOF
 
-# Make the init script executable
-chmod +x /etc/init.d/xray
+    chmod 0755 /etc/init.d/xray
+    rc-update add xray default >/dev/null 2>&1 || true
 
-# Step 6: Enable and start the Xray service
-rc-update add xray default
-#service xray start
-
-# Step 7: Clean up temporary files
-rm -f /tmp/xray.zip
-
-# Step 8: Show status of Xray service
-service xray status
-
-echo "Xray installation complete!"
-
-   echo "Please select a configuration method:"
-    echo "1) Auto Config"
-    echo "2) Manual Config"
+    log "Installed: $(${XRAY_BIN} version | head -n 1)"
+    echo "Please select a configuration method:"
+    echo "1) Auto Config (Amazon target)"
+    echo "2) Manual/Regional Config"
     echo "3) Exit"
 
     while true; do
         read -r -p "Enter your choice (1-3): " choice
-        case "$choice" in
+        case "${choice}" in
             1) configReality; break ;;
             2) configRealityRegion; break ;;
             3) echo "Exiting..."; exit 0 ;;
@@ -252,32 +444,53 @@ echo "Xray installation complete!"
         esac
     done
 
-
-
-
-clear
-client_re
+    clear
+    client_re
 }
+
 client_re(){
+    local serverIP uriHost uri resultFile
+    serverIP=$(getIP)
+    uriHost=$(formatUriHost "${serverIP}")
+    uri="vless://${v2uuid}@${uriHost}:${getPort}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sniName}&fp=chrome&pbk=${rePublicKey}&sid=${shortId1}&type=tcp#xrayReality"
+    resultFile="/root/xray-reality.txt"
+
+    cat >"${resultFile}" <<EOF
+Address: ${serverIP}
+Port: ${getPort}
+UUID: ${v2uuid}
+Flow: xtls-rprx-vision
+Transport: tcp
+Security: reality
+Target: ${serverName}:443
+SNI: ${sniName}
+Public key: ${rePublicKey}
+Short ID: ${shortId1}
+
+${uri}
+EOF
+    chmod 0600 "${resultFile}"
+
     echo
     echo "安装已经完成"
     echo
     echo "===========reality配置参数============"
     echo "代理模式：vless"
-    echo "地址：$(getIP)"
+    echo "地址：${serverIP}"
     echo "端口：${getPort}"
     echo "UUID：${v2uuid}"
     echo "流控：xtls-rprx-vision"
     echo "传输协议：tcp"
     echo "Public key：${rePublicKey}"
     echo "底层传输：reality"
-    echo "SNI: $sniName"
+    echo "Target: ${serverName}:443"
+    echo "SNI: ${sniName}"
     echo "shortIds: ${shortId1}"
     echo "===================================="
-    echo "vless://${v2uuid}@$(getIP):${getPort}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sniName&fp=chrome&pbk=${rePublicKey}&sid=${shortId1}&type=tcp&headerType=none#xrayReality"
+    echo "${uri}"
     echo
+    echo "配置已保存到 ${resultFile}"
 }
-
 
 installHy2(){
   #!/bin/bash
@@ -436,11 +649,11 @@ menu(){
     echo "1. install Xray and Config Reality"
     echo "2. install hystria2"
     read option
-    if [[ option -eq 0 ]]; then
+    if [[ "$option" -eq 0 ]]; then
         exit 0
-    elif [[ option -eq 1 ]]; then
+    elif [[ "$option" -eq 1 ]]; then
         installXray
-    elif [[ option -eq 2 ]]; then
+    elif [[ "$option" -eq 2 ]]; then
         installHy2
     else
         echo "invid option"
