@@ -101,6 +101,19 @@ generateRealityCredentials(){
     [[ "${shortId1}" =~ ^[0-9a-f]{16}$ ]] || die "Failed to generate shortId."
 }
 
+validateXrayConfig(){
+    local configFile=$1 output
+
+    if ! output=$(XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" \
+        "${XRAY_BIN}" run -test -format json -c "${configFile}" 2>&1); then
+        printf '%s\n' "${output}" >&2
+        return 1
+    fi
+
+    [[ -n "${output}" ]] && printf '%s\n' "${output}"
+    return 0
+}
+
 installRealityConfig(){
     local tempConfig backupConfig=""
     tempConfig=$(mktemp)
@@ -139,17 +152,7 @@ installRealityConfig(){
           "shortIds": [
             "${shortId1}",
             "${shortId2}"
-          ],
-          "limitFallbackUpload": {
-            "afterBytes": 0,
-            "bytesPerSec": 262144,
-            "burstBytesPerSec": 1048576
-          },
-          "limitFallbackDownload": {
-            "afterBytes": 0,
-            "bytesPerSec": 1048576,
-            "burstBytesPerSec": 4194304
-          }
+          ]
         }
       }
     }
@@ -167,11 +170,10 @@ installRealityConfig(){
 }
 EOF
 
-    XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" \
-        "${XRAY_BIN}" run -test -c "${tempConfig}" >/dev/null || {
-            rm -f "${tempConfig}"
-            die "Generated Xray configuration did not pass validation."
-        }
+    validateXrayConfig "${tempConfig}" || {
+        warn "Generated config kept at ${tempConfig} for troubleshooting."
+        die "Generated Xray configuration did not pass validation."
+    }
 
     mkdir -p "${XRAY_CONFIG_DIR}"
     if [[ -f "${XRAY_CONFIG}" ]]; then
@@ -269,11 +271,10 @@ configRealityRegion(){
 }
 EOF
 
-    XRAY_LOCATION_ASSET="${XRAY_ASSET_DIR}" \
-        "${XRAY_BIN}" run -test -c "${tempConfig}" >/dev/null || {
-            rm -f "${tempConfig}"
-            die "Generated manual configuration did not pass validation."
-        }
+    validateXrayConfig "${tempConfig}" || {
+        warn "Generated config kept at ${tempConfig} for troubleshooting."
+        die "Generated manual configuration did not pass validation."
+    }
 
     [[ -f "${XRAY_CONFIG}" ]] && cp -p "${XRAY_CONFIG}" "${XRAY_CONFIG}.bak.$(date '+%Y%m%d%H%M%S')"
     install -m 0600 "${tempConfig}" "${XRAY_CONFIG}"
@@ -384,9 +385,9 @@ installXray(){
     }
 
     rc-service xray stop >/dev/null 2>&1 || true
-    mkdir -p "${XRAY_HOME}" "${XRAY_CONFIG_DIR}" "${XRAY_ASSET_DIR}" "${XRAY_LOG_DIR}"
+    mkdir -p "${XRAY_HOME}" "${XRAY_CONFIG_DIR}" "${XRAY_ASSET_DIR}" "${XRAY_LOG_DIR}" "$(dirname "${XRAY_CLI_LINK}")"
     install -m 0755 "${tempDir}/unpack/xray" "${XRAY_BIN}"
-    ln -sfn "${XRAY_BIN}" "${XRAY_CLI_LINK}"
+    ln -sfn "${XRAY_BIN}" "${XRAY_CLI_LINK}" || warn "Could not create ${XRAY_CLI_LINK}; use ${XRAY_BIN} directly."
     [[ -f "${tempDir}/unpack/geoip.dat" ]] && install -m 0644 "${tempDir}/unpack/geoip.dat" "${XRAY_ASSET_DIR}/geoip.dat"
     [[ -f "${tempDir}/unpack/geosite.dat" ]] && install -m 0644 "${tempDir}/unpack/geosite.dat" "${XRAY_ASSET_DIR}/geosite.dat"
     rm -rf "${tempDir}"
@@ -406,7 +407,7 @@ command_args="run -c /usr/local/etc/xray/config.json"
 pidfile="/run/${RC_SVCNAME}.pid"
 output_log="/var/log/xray/openrc.log"
 error_log="/var/log/xray/openrc.err"
-env=${env:-"XRAY_LOCATION_ASSET=/usr/local/share/xray"}
+export XRAY_LOCATION_ASSET="/usr/local/share/xray"
 extra_commands="checkconfig"
 
 depend() {
@@ -415,7 +416,7 @@ depend() {
 }
 
 checkconfig() {
-    "$command" run -test -c /usr/local/etc/xray/config.json
+    "$command" run -test -format json -c /usr/local/etc/xray/config.json
 }
 
 start_pre() {
